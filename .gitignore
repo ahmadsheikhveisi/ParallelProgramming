@@ -30,3 +30,8 @@
 *.exe
 *.out
 *.app
+/.metadata/
+
+# Build Directory
+[Bb]uild/
+Debug/

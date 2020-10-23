@@ -101,14 +101,22 @@
 //****************************************************************************
 
 #include "utils.h"
+#include <iostream>
 
+__device__ int d_min(int a, int b)
+{
+	return a > b?b:a;
+}
+__device__ int d_max(int a, int b)
+{
+	return a > b?a:b;
+}
 __global__
-void gaussian_blur(const unsigned char* const inputChannel,
+void naive_gaussian_blur(const unsigned char* const inputChannel,
                    unsigned char* const outputChannel,
                    int numRows, int numCols,
                    const float* const filter, const int filterWidth)
 {
-  // TODO
   
   // NOTE: Be sure to compute any intermediate results in floating point
   // before storing the final result as unsigned char.
@@ -129,6 +137,23 @@ void gaussian_blur(const unsigned char* const inputChannel,
   // the value is out of bounds), you should explicitly clamp the neighbor values you read
   // to be within the bounds of the image. If this is not clear to you, then please refer
   // to sequential reference solution for the exact clamping semantics you should follow.
+
+	int x = blockIdx.x * blockDim.x + threadIdx.x;
+	int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+	if (x < numCols && y < numRows)
+	{
+		float out_val = 0.0f;
+		for (int f_idx = 0; f_idx < filterWidth*filterWidth; ++f_idx)
+		{
+			int neighbor_pix_x = d_min(d_max(x - (filterWidth/2) + (f_idx % filterWidth),0),numCols-1);
+			int neighbor_pix_y = d_min(d_max(y - (filterWidth/2) + (f_idx / filterWidth),0),numRows-1);
+
+			out_val += filter[f_idx] * inputChannel[neighbor_pix_x + numCols*neighbor_pix_y];
+
+		}
+		outputChannel[x + numCols*y] = (unsigned char)out_val;
+	}
 }
 
 //This kernel takes in an image represented as a uchar4 and splits
@@ -152,9 +177,10 @@ void separateChannels(const uchar4* const inputImageRGBA,
   // }
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
 	int y = blockIdx.y * blockDim.y + threadIdx.y;
-	if (x < numCols && y < numRows)
+	if ((x < numCols) && (y < numRows))
 	{
-		int pix = y*numRows + x;
+		int pix = y*numCols + x;
+		//printf("pixel %d\n", pix);
 		redChannel[pix] = inputImageRGBA[pix].x;
 		greenChannel[pix] = inputImageRGBA[pix].y;
 		blueChannel[pix] = inputImageRGBA[pix].z;
@@ -239,14 +265,29 @@ void your_gaussian_blur(const uchar4 * const h_inputImageRGBA, uchar4 * const d_
   // Launch a kernel for separating the RGBA image into different color channels
 
   separateChannels<<<gridSize, blockSize>>>(d_inputImageRGBA, numRows,
-		  numCols, d_redBlurred,
-		  d_greenBlurred, d_blueBlurred);
+		  numCols, d_red,
+		  d_green, d_blue);
 
   // Call cudaDeviceSynchronize(), then call checkCudaErrors() immediately after
   // launching your kernel to make sure that you didn't make any mistakes.
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
-  //TODO: Call your convolution kernel here 3 times, once for each color channel.
+  // Call your convolution kernel here 3 times, once for each color channel.
+
+  naive_gaussian_blur<<<gridSize,blockSize>>>(d_red,
+		  d_redBlurred,
+          numRows, numCols,
+          d_filter, filterWidth);
+
+  naive_gaussian_blur<<<gridSize,blockSize>>>(d_blue,
+		  d_blueBlurred,
+          numRows, numCols,
+          d_filter, filterWidth);
+
+  naive_gaussian_blur<<<gridSize,blockSize>>>(d_green,
+		  d_greenBlurred,
+          numRows, numCols,
+          d_filter, filterWidth);
 
   // Again, call cudaDeviceSynchronize(), then call checkCudaErrors() immediately after
   // launching your kernel to make sure that you didn't make any mistakes.

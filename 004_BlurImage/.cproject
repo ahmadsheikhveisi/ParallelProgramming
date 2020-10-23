@@ -27,7 +27,7 @@
             			
             <storageModule moduleId="cdtBuildSystem" version="4.0.0">
                 				
-                <configuration artifactName="${ProjName}" buildArtefactType="org.eclipse.cdt.build.core.buildArtefactType.exe" buildProperties="org.eclipse.cdt.build.core.buildArtefactType=org.eclipse.cdt.build.core.buildArtefactType.exe,org.eclipse.cdt.build.core.buildType=org.eclipse.cdt.build.core.buildType.debug" description="" id="com.nvidia.cuda.toolchain.linux.configuration.debug.1054793985" name="Debug" optionalBuildProperties="org.eclipse.cdt.docker.launcher.containerbuild.property.enablement=false,org.eclipse.cdt.docker.launcher.containerbuild.property.selectedvolumes=,org.eclipse.cdt.docker.launcher.containerbuild.property.image=null,org.eclipse.cdt.docker.launcher.containerbuild.property.volumes=,org.eclipse.cdt.docker.launcher.containerbuild.property.connection=" parent="com.nvidia.cuda.toolchain.linux.configuration.debug">
+                <configuration artifactName="${ProjName}" buildArtefactType="org.eclipse.cdt.build.core.buildArtefactType.exe" buildProperties="org.eclipse.cdt.build.core.buildArtefactType=org.eclipse.cdt.build.core.buildArtefactType.exe,org.eclipse.cdt.build.core.buildType=org.eclipse.cdt.build.core.buildType.debug" description="" id="com.nvidia.cuda.toolchain.linux.configuration.debug.1054793985" name="Debug" optionalBuildProperties="org.eclipse.cdt.docker.launcher.containerbuild.property.enablement=false,org.eclipse.cdt.docker.launcher.containerbuild.property.volumes=,org.eclipse.cdt.docker.launcher.containerbuild.property.connection=,org.eclipse.cdt.docker.launcher.containerbuild.property.selectedvolumes=,org.eclipse.cdt.docker.launcher.containerbuild.property.image=null" parent="com.nvidia.cuda.toolchain.linux.configuration.debug">
                     					
                     <folderInfo id="com.nvidia.cuda.toolchain.linux.configuration.debug.1054793985." name="/" resourcePath="">
                         						
@@ -98,20 +98,6 @@
                                 <inputType id="com.nvidia.cuda.toolchain.input.cpp.36270552" name="C++" superClass="com.nvidia.cuda.toolchain.input.cpp"/>
                                 							
                             </tool>
-                            						
-                        </toolChain>
-                        					
-                    </folderInfo>
-                    					
-                    <folderInfo id="com.nvidia.cuda.toolchain.linux.configuration.debug.1054793985.2034295837" name="/" resourcePath="build">
-                        						
-                        <toolChain id="com.nvidia.cuda.toolchain.linux.debugToolchain.484528252" name="CUDA Linux toolchain" superClass="com.nvidia.cuda.toolchain.linux.debugToolchain" unusedChildren="">
-                            							
-                            <tool id="nvcc.linker.1449116554" name="NVCC linker" superClass="nvcc.linker.2041400673"/>
-                            							
-                            <tool id="nvcc.archiver.1016434924" name="NVCC archiver" superClass="nvcc.archiver.304672193"/>
-                            							
-                            <tool id="nvcc.compiler.1211003613" name="NVCC Compiler" superClass="nvcc.compiler.133917108"/>
                             						
                         </toolChain>
                         					

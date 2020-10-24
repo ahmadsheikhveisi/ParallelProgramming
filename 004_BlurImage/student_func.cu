@@ -103,6 +103,8 @@
 #include "utils.h"
 #include <iostream>
 
+#define BLOCK_SIZE 32
+
 __device__ int d_min(int a, int b)
 {
 	return a > b?b:a;
@@ -146,10 +148,58 @@ void naive_gaussian_blur(const unsigned char* const inputChannel,
 		float out_val = 0.0f;
 		for (int f_idx = 0; f_idx < filterWidth*filterWidth; ++f_idx)
 		{
+			// clamp the  boundaries, initially i tried to set them to zero, but reference does the clamp
 			int neighbor_pix_x = d_min(d_max(x - (filterWidth/2) + (f_idx % filterWidth),0),numCols-1);
 			int neighbor_pix_y = d_min(d_max(y - (filterWidth/2) + (f_idx / filterWidth),0),numRows-1);
 
 			out_val += filter[f_idx] * inputChannel[neighbor_pix_x + numCols*neighbor_pix_y];
+
+		}
+		outputChannel[x + numCols*y] = (unsigned char)out_val;
+	}
+}
+
+__global__
+void shared_mem_gaussian_blur(const unsigned char* const inputChannel,
+                   unsigned char* const outputChannel,
+                   int numRows, int numCols,
+                   const float* const filter, const int filterWidth)
+{
+	int x = blockIdx.x * blockDim.x + threadIdx.x;
+	int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+	if (x < numCols && y < numRows)
+	{
+
+		__shared__ unsigned char image_blk[BLOCK_SIZE * BLOCK_SIZE];
+
+		image_blk[threadIdx.x + threadIdx.y * blockDim.x] = inputChannel[x + numCols*y];
+
+		__syncthreads();
+
+		float out_val = 0.0f;
+
+		int left_x = blockIdx.x * blockDim.x;
+		int top_y = blockIdx.y * blockDim.y;
+		int right_x = (blockIdx.x + 1) * blockDim.x;
+		int bottom_y = (blockIdx.y + 1) * blockDim.y;
+
+		for (int f_idx = 0; f_idx < filterWidth*filterWidth; ++f_idx)
+		{
+			// clamp the  boundaries, initially i tried to set them to zero, but reference does the clamp
+			int neighbor_pix_x = d_min(d_max(x - (filterWidth/2) + (f_idx % filterWidth),0),numCols-1);
+			int neighbor_pix_y = d_min(d_max(y - (filterWidth/2) + (f_idx / filterWidth),0),numRows-1);
+
+			if (neighbor_pix_x >= left_x && neighbor_pix_x < right_x &&
+					neighbor_pix_y >= top_y && neighbor_pix_y < bottom_y)
+			{
+				out_val += filter[f_idx] * image_blk[neighbor_pix_x - left_x  +
+													 BLOCK_SIZE*(neighbor_pix_y - top_y)];
+			}
+			else
+			{
+				out_val += filter[f_idx] * inputChannel[neighbor_pix_x + numCols*neighbor_pix_y];
+			}
 
 		}
 		outputChannel[x + numCols*y] = (unsigned char)out_val;
@@ -256,7 +306,7 @@ void your_gaussian_blur(const uchar4 * const h_inputImageRGBA, uchar4 * const d_
                         const int filterWidth)
 {
   // Set reasonable block size (i.e., number of threads per block)
-  const dim3 blockSize(32,32,1);
+  const dim3 blockSize(BLOCK_SIZE,BLOCK_SIZE,1);
 
   //Compute correct grid size (i.e., number of blocks per kernel launch)
   //from the image size and and block size.
@@ -274,17 +324,17 @@ void your_gaussian_blur(const uchar4 * const h_inputImageRGBA, uchar4 * const d_
 
   // Call your convolution kernel here 3 times, once for each color channel.
 
-  naive_gaussian_blur<<<gridSize,blockSize>>>(d_red,
+  shared_mem_gaussian_blur<<<gridSize,blockSize>>>(d_red,
 		  d_redBlurred,
           numRows, numCols,
           d_filter, filterWidth);
 
-  naive_gaussian_blur<<<gridSize,blockSize>>>(d_blue,
+  shared_mem_gaussian_blur<<<gridSize,blockSize>>>(d_blue,
 		  d_blueBlurred,
           numRows, numCols,
           d_filter, filterWidth);
 
-  naive_gaussian_blur<<<gridSize,blockSize>>>(d_green,
+  shared_mem_gaussian_blur<<<gridSize,blockSize>>>(d_green,
 		  d_greenBlurred,
           numRows, numCols,
           d_filter, filterWidth);

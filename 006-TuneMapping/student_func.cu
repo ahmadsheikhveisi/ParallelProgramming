@@ -6,7 +6,7 @@
 
   A High Dynamic Range (HDR) image contains a wider variation of intensity
   and color than is allowed by the RGB format with 1 byte per channel that we
-  have used in the previous assignment.  
+  have used in the previous assignment.
 
   To store this extra information we use single precision floating point for
   each channel.  This allows for an extremely wide range of intensity values.
@@ -53,7 +53,7 @@
   Old TV signals used to be transmitted in this way so that black & white
   televisions could display the luminance channel while color televisions would
   display all three of the channels.
-  
+
 
   Tone-mapping
   ============
@@ -83,6 +83,9 @@
 #include <limits>
 
 #define BLOCK_SIZE 1024
+void reduce_unitTest(void);
+void histogram_unitTest(void);
+void scan_unitTest(void);
 
 typedef float (*pointFunction_t)(float, float);
 
@@ -135,8 +138,69 @@ __global__ void reduce_kernel(const float * const d_in,
 	}
 }
 
-__global__ void histogram_kernel(const float *d_in, float *d_bins, const int BIN_COUNTS)
+__global__ void histogram_kernel(const float *d_in, unsigned int * const d_bins,
+		const size_t numBins, size_t size, size_t pix_thread,
+		float lumMin, float lumRange)
 {
+	extern __shared__ unsigned int s_bins[];
+
+	int global_id = blockIdx.x * blockDim.x + threadIdx.x;
+
+	/*setting the bins to zero*/
+
+	if (threadIdx.x < numBins)
+	{
+		s_bins[threadIdx.x] = 0;
+	}
+
+	__syncthreads();
+
+	for (int cnt = 0; cnt <  pix_thread;++cnt)
+	{
+		if (global_id*pix_thread + cnt < size)
+		{
+			int bin = (int)((d_in[global_id*pix_thread + cnt] - lumMin)/lumRange * numBins);
+
+			/*only for the maximum the bin is equal to numBIns*/
+			bin = bin >= numBins? numBins - 1: bin;
+
+			atomicAdd(&s_bins[bin],1);
+		}
+	}
+
+	__syncthreads();
+
+	if (threadIdx.x < numBins)
+	{
+		atomicAdd(&d_bins[threadIdx.x],s_bins[threadIdx.x]);
+	}
+
+
+}
+
+
+__global__ void double_buffer_prefix_sum_kernel(const unsigned int *d_bins, unsigned int *d_cdf, int numBins)
+{
+	extern __shared__ unsigned int temp[];
+	// allocated on invocation
+	int thid = threadIdx.x;
+	int pout = 0, pin = 1;
+	// load input into shared memory.
+	// Exclusive scan: shift right by one and set first element to 0
+	temp[thid] = (thid > 0) ? d_bins[thid-1] : 0;
+	__syncthreads();
+	for( int offset = 1; offset < numBins; offset <<= 1 )
+	{
+		// swap double buffer indices
+		pout = 1 - pout;
+		pin  = 1 - pout;
+		if(thid >= offset)
+			temp[pout*numBins+thid] = temp[pin*numBins+thid] + temp[pin*numBins+thid - offset];
+		else
+			temp[pout*numBins+thid] = temp[pin*numBins+thid];
+		__syncthreads();
+	}
+	d_cdf[thid] = temp[pout*numBins+thid]; // write output
 
 }
 
@@ -197,9 +261,35 @@ void reduce (float & h_out, const float * const d_in,
 
 }
 
-void histogram(void)
+void histogram(const float *d_in, unsigned int * const d_bins,
+		const size_t numBins, size_t size,
+		float lumMin, float lumRange)
 {
+	size_t pix_per_thread = 16;
 
+	size_t pix_per_block = pix_per_thread * BLOCK_SIZE;
+
+	size_t numBlocks = (size + pix_per_block - 1) / (pix_per_block);
+
+	histogram_kernel<<<numBlocks,BLOCK_SIZE,numBins*sizeof(unsigned int)>>>(d_in, d_bins,
+		numBins, size, pix_per_thread,
+		lumMin, lumRange);
+
+	cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+
+}
+
+void scan(unsigned int *d_bins, unsigned int *d_cdf, int numBins)
+{
+	// since we have more processors than work (numBins is equal to 1024), I chose Hillis Steele scan
+	// it is more step efficient
+	// double buffered prefix sum assumes that numBins is equal to block size
+	// which is the case here
+
+	double_buffer_prefix_sum_kernel<<<1,BLOCK_SIZE,2*numBins*sizeof(unsigned int)>>>(d_bins, d_cdf, numBins);
+
+	cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 }
 
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
@@ -232,26 +322,49 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
 
 	reduce(min_logLum,d_logLuminance,size_elements,h_pointFunction, std::numeric_limits<float>::max());
 
-	std::cout << "size " << size_elements << std::endl;
-
 	/*
     2) subtract them to find the range
     */
 	float lumRange = max_logLum - min_logLum;
 
-
+	//std::cout << min_logLum << " " << max_logLum << std::endl;
 
 	/*
     3) generate a histogram of all the values in the logLuminance channel using
        the formula: bin = (lum[i] - lumMin) / lumRange * numBins
        */
+	unsigned int *d_bins;
 
+	checkCudaErrors(cudaMalloc(&d_bins,numBins*sizeof(unsigned int)));
+	checkCudaErrors(cudaMemset(d_bins,0,numBins*sizeof(unsigned int)));
+
+	histogram(d_logLuminance, d_bins,
+		numBins, size_elements,
+		min_logLum, lumRange);
+	/*
+	unsigned int *h_bins = new unsigned int[numBins];
+	checkCudaErrors(cudaMemcpy(h_bins,d_bins, numBins*sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
+	for (int cnt = 0; cnt < numBins; ++cnt)
+	{
+		std::cout << h_bins[cnt] << " ";
+		if ((cnt + 1) % 16 == 0)
+		{
+			std::cout << std::endl;
+		}
+	}
+
+	delete[] h_bins;
+	*/
 
 	/*
     4) Perform an exclusive scan (prefix sum) on the histogram to get
        the cumulative distribution of luminance values (this should go in the
        incoming d_cdf pointer which already has been allocated for you)       */
 
+	scan(d_bins, d_cdf, numBins);
+
+	checkCudaErrors(cudaFree(d_bins));
 
 }
 
@@ -283,4 +396,70 @@ void reduce_unitTest(void)
 	std::cout << "minimum out " << min_logLum << std::endl;
 
 	checkCudaErrors(cudaFree(d_test_arr));
+}
+
+#define N_HISTO_TEST_SIZE 10
+void histogram_unitTest(void)
+{
+	int numBins = 5;
+	unsigned int *h_bins = new unsigned int(numBins);
+	unsigned int *d_bins;
+	checkCudaErrors(cudaMalloc(&d_bins,numBins*sizeof(unsigned int)));
+
+	float h_test_arr[N_HISTO_TEST_SIZE] = {0.0f, 0.1f, 0.5f, 1.2f, 3.5f,
+							4.1f, 5.0f, 3.0f, 1.0f, 4.5f};
+
+	float *d_test_arr;
+	checkCudaErrors(cudaMalloc(&d_test_arr, N_HISTO_TEST_SIZE * sizeof(unsigned int)));
+	checkCudaErrors(cudaMemcpy(d_test_arr, h_test_arr, N_HISTO_TEST_SIZE*sizeof(unsigned int), cudaMemcpyHostToDevice));
+
+	histogram(d_test_arr, d_bins,
+		numBins, N_HISTO_TEST_SIZE,
+		0.0f, 5.0f);
+
+	checkCudaErrors(cudaMemcpy(h_bins, d_bins, numBins * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
+	for (int cnt = 0; cnt < numBins; ++cnt)
+		std::cout << h_bins[cnt] << " ";
+	std::cout << std::endl;
+
+	checkCudaErrors(cudaFree(d_test_arr));
+	checkCudaErrors(cudaFree(d_bins));
+
+	delete[] h_bins;
+}
+
+void scan_unitTest(void)
+{
+	unsigned int h_bins[BLOCK_SIZE];
+	for (int cnt = 0; cnt < BLOCK_SIZE; ++cnt)
+	{
+		h_bins[cnt] = 1;
+	}
+
+	unsigned int *d_bins;
+	checkCudaErrors(cudaMalloc(&d_bins, sizeof(unsigned int)*BLOCK_SIZE));
+	checkCudaErrors(cudaMemcpy(d_bins, h_bins, sizeof(unsigned int)*BLOCK_SIZE, cudaMemcpyHostToDevice));
+
+	unsigned int *d_cdf;
+	checkCudaErrors(cudaMalloc(&d_cdf, sizeof(unsigned int)*BLOCK_SIZE));
+	checkCudaErrors(cudaMemset(d_cdf, 0, sizeof(unsigned int) * BLOCK_SIZE));
+
+
+	scan(d_bins, d_cdf, BLOCK_SIZE);
+
+	unsigned int h_cdf[BLOCK_SIZE];
+	memset(h_cdf, 0, sizeof(unsigned int)* BLOCK_SIZE);
+	checkCudaErrors(cudaMemcpy(h_cdf, d_cdf, sizeof(unsigned int)* BLOCK_SIZE, cudaMemcpyDeviceToHost));
+	for (int cnt = 0; cnt < BLOCK_SIZE; ++cnt)
+	{
+		std::cout << h_cdf[cnt] << " ";
+		if ((cnt+1) % 16 == 0)
+		{
+			std::cout << std::endl;
+		}
+	}
+
+	checkCudaErrors(cudaFree(d_bins));
+	checkCudaErrors(cudaFree(d_cdf));
 }

@@ -171,7 +171,7 @@ void shared_mem_gaussian_blur(const unsigned char* const inputChannel,
 	if (x < numCols && y < numRows)
 	{
 
-		__shared__ unsigned char image_blk[BLOCK_SIZE * BLOCK_SIZE];
+		extern __shared__ unsigned char image_blk[];
 
 		image_blk[threadIdx.x + threadIdx.y * blockDim.x] = inputChannel[x + numCols*y];
 
@@ -324,17 +324,17 @@ void your_gaussian_blur(const uchar4 * const h_inputImageRGBA, uchar4 * const d_
 
   // Call your convolution kernel here 3 times, once for each color channel.
 
-  shared_mem_gaussian_blur<<<gridSize,blockSize>>>(d_red,
+  shared_mem_gaussian_blur<<<gridSize,blockSize,sizeof(unsigned char)*BLOCK_SIZE * BLOCK_SIZE>>>(d_red,
 		  d_redBlurred,
           numRows, numCols,
           d_filter, filterWidth);
 
-  shared_mem_gaussian_blur<<<gridSize,blockSize>>>(d_blue,
+  shared_mem_gaussian_blur<<<gridSize,blockSize,sizeof(unsigned char)*BLOCK_SIZE * BLOCK_SIZE>>>(d_blue,
 		  d_blueBlurred,
           numRows, numCols,
           d_filter, filterWidth);
 
-  shared_mem_gaussian_blur<<<gridSize,blockSize>>>(d_green,
+  shared_mem_gaussian_blur<<<gridSize,blockSize,sizeof(unsigned char)*BLOCK_SIZE * BLOCK_SIZE>>>(d_green,
 		  d_greenBlurred,
           numRows, numCols,
           d_filter, filterWidth);

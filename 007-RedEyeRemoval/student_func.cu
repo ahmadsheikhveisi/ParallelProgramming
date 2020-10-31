@@ -48,6 +48,132 @@
 
 #define USE_THRUST 0
 
+// must be a divisor of 32
+#define NUM_BITS_PASS 4
+
+#define HISTO_ELEMS_THREAD 16
+
+#define BLOCK_SIZE 1024
+
+__global__ void predicate_kernel(unsigned int * d_out,
+								unsigned int * d_in,
+								size_t numElems,
+								int bit_num)
+{
+	size_t thid = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (thid >= numElems)
+		return;
+
+	int filter = ((1 << NUM_BITS_PASS) - 1) << bit_num;
+
+	int num = (d_in[thid] & filter) >> bit_num;
+
+	d_out[num * numElems + thid] = 1;
+}
+
+__global__ void histogram_kernel(const unsigned int *d_in, unsigned int * const d_bins,
+		const size_t numBins, size_t size, size_t pix_thread, int bit_num)
+{
+	extern __shared__ unsigned int s_bins[];
+
+	int global_id = blockIdx.x * blockDim.x + threadIdx.x;
+
+	int filter = ((1 << NUM_BITS_PASS) - 1) << bit_num;
+
+	/*setting the bins to zero*/
+
+	if (threadIdx.x < numBins)
+	{
+		s_bins[threadIdx.x] = 0;
+	}
+
+	__syncthreads();
+
+	for (int cnt = 0; cnt <  pix_thread;++cnt)
+	{
+		if (global_id*pix_thread + cnt < size)
+		{
+			int bin = (d_in[global_id*pix_thread + cnt] & filter) >> bit_num;
+
+			atomicAdd(&s_bins[bin],1);
+		}
+	}
+
+	__syncthreads();
+
+	if (threadIdx.x < numBins)
+	{
+		atomicAdd(&d_bins[threadIdx.x],s_bins[threadIdx.x]);
+	}
+
+
+}
+
+#define NUM_BANKS 32
+#define LOG_NUM_BANKS 5
+#ifdef ZERO_BANK_CONFLICTS
+#define CONFLICT_FREE_OFFSET(n) \
+((n) >> (LOG_NUM_BANKS) + (n) >> (2 * LOG_NUM_BANKS))
+#else
+#define CONFLICT_FREE_OFFSET(_n) ((_n) >> LOG_NUM_BANKS)
+#endif
+
+__global__ void prescan(float *g_odata, float *g_idata, int n)
+{
+	extern __shared__ float temp[];// allocated on invocation
+	int thid = threadIdx.x;
+	int offset = 1;
+	//A
+	int ai = thid;
+	int bi = thid + (n/2);
+	int bankOffsetA = CONFLICT_FREE_OFFSET(ai);
+	int bankOffsetB = CONFLICT_FREE_OFFSET(bi);
+	temp[ai + bankOffsetA] = g_idata[ai];
+	temp[bi + bankOffsetB] = g_idata[bi];
+
+	for (int d = n>>1; d > 0; d >>= 1) // build sum in place up the tree
+	{
+		__syncthreads();
+		if (thid < d)
+		{
+			//B
+			int ai = offset*(2*thid+1)-1;
+			int bi = offset*(2*thid+2)-1;
+			ai += CONFLICT_FREE_OFFSET(ai);
+			bi += CONFLICT_FREE_OFFSET(bi);
+
+			temp[bi] += temp[ai];
+		}
+		offset <<= 1;
+	}
+	//C
+	if (thid == 0)
+	{
+		temp[n - 1 + CONFLICT_FREE_OFFSET(n - 1)] = 0; // clear the last element
+	}
+	for (int d = 1; d < n; d *= 2) // traverse down tree & build scan
+	{
+		offset >>= 1;
+		__syncthreads();
+		if (thid < d)
+		{
+			//D
+			int ai = offset*(2*thid+1)-1;
+			int bi = offset*(2*thid+2)-1;
+			ai += CONFLICT_FREE_OFFSET(ai);
+			bi += CONFLICT_FREE_OFFSET(bi);
+
+			float t = temp[ai];
+			temp[ai] = temp[bi];
+			temp[bi] += t;
+		}
+	}
+	__syncthreads();
+	//E
+	g_odata[ai] = temp[ai + bankOffsetA];
+	g_odata[bi] = temp[bi + bankOffsetB];
+}
 
 void your_sort(unsigned int* const d_inputVals,
                unsigned int* const d_inputPos,
@@ -88,6 +214,41 @@ void your_sort(unsigned int* const d_inputVals,
 
 #else
 	int num_bits = sizeof(unsigned int) * 8;
+	int num_splits = 1 << NUM_BITS_PASS;
+	int num_blocks = (numElems + BLOCK_SIZE + 1) / BLOCK_SIZE;
+
+	unsigned int *d_pred;
+	// for each split we need one predicate
+	// for example for four way split we need four split
+	checkCudaErrors(cudaMalloc(&d_pred, num_splits * numElems * sizeof(unsigned int)));
+	checkCudaErrors(cudaMemset(d_pred, 0, num_splits * numElems * sizeof(unsigned int)));
+
+	unsigned int *d_bins;
+	checkCudaErrors(cudaMalloc(&d_bins, num_splits * sizeof(unsigned int)));
+	checkCudaErrors(cudaMemset(d_bins, 0, num_splits * sizeof(unsigned int)));
+
+	for(int cnt = 0; cnt < num_bits; cnt += NUM_BITS_PASS)
+	{
+		predicate_kernel<<<num_blocks, BLOCK_SIZE>>>(d_pred, d_inputVals, numElems, cnt);
+
+		cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+		histogram_kernel<<<num_blocks, BLOCK_SIZE,num_splits * sizeof(unsigned int) * BLOCK_SIZE>>>(d_inputVals,
+				d_bins, num_splits, numElems, HISTO_ELEMS_THREAD, cnt);
+
+		cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+		// scan
+
+
+		// move
+
+		checkCudaErrors(cudaMemset(d_pred, 0, (1 << NUM_BITS_PASS) * numElems * sizeof(unsigned int)));
+		checkCudaErrors(cudaMemset(d_bins, 0, num_splits * sizeof(unsigned int)));
+	}
+
+	checkCudaErrors(cudaFree(d_pred));
+	checkCudaErrors(cudaFree(d_bins));
 
 #endif
 }

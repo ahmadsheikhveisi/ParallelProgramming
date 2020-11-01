@@ -35,7 +35,7 @@
                             							
                             <targetPlatform archList="all" binaryParser="org.eclipse.cdt.core.ELF" id="com.nvidia.cuda.toolchain.targetLinuxPlatform.1363987219" isAbstract="false" osList="linux" superClass="com.nvidia.cuda.toolchain.targetLinuxPlatform"/>
                             							
-                            <builder buildPath="${workspace_loc:/007-RedEyeRemoval}/Debug" id="com.nvidia.cuda.toolchain.builder.317220394" keepEnvironmentInBuildfile="false" managedBuildOn="true" name="CUDA Toolkit Builder" superClass="com.nvidia.cuda.toolchain.builder"/>
+                            <builder arguments="-j16" buildPath="${workspace_loc:/007-RedEyeRemoval}/Debug" command="make" id="com.nvidia.cuda.toolchain.builder.317220394" keepEnvironmentInBuildfile="false" managedBuildOn="true" name="CUDA Toolkit Builder" superClass="com.nvidia.cuda.toolchain.builder"/>
                             							
                             <tool id="nvcc.linker.1342409360" name="NVCC linker" superClass="nvcc.linker">
                                 								

@@ -2,11 +2,6 @@
 //Radix Sorting
 
 #include "utils.h"
-#include <thrust/host_vector.h>
-#include <thrust/device_vector.h>
-#include <thrust/sort.h>
-#include <thrust/copy.h>
-#include <algorithm>
 
 /* Red Eye Removal
    ===============
@@ -46,14 +41,27 @@
 
  */
 
-#define USE_THRUST 0
+#define USE_THRUST 1
+
+#if USE_THRUST
+#include <thrust/host_vector.h>
+#include <thrust/device_vector.h>
+#include <thrust/sort.h>
+#include <thrust/copy.h>
+#include <algorithm>
+#endif
 
 // must be a divisor of 32
+// this number also determines the number of bins in histogram
+// for 4 bits per pass we need 16 bins
 #define NUM_BITS_PASS 4
 
 #define HISTO_ELEMS_THREAD 16
 
+// must be always a power of 2 for prescan
 #define BLOCK_SIZE 1024
+
+void prescan_UnitTest(void);
 
 __global__ void predicate_kernel(unsigned int * d_out,
 								unsigned int * d_in,
@@ -76,7 +84,6 @@ __global__ void histogram_kernel(const unsigned int *d_in, unsigned int * const 
 		const size_t numBins, size_t size, size_t pix_thread, int bit_num)
 {
 	extern __shared__ unsigned int s_bins[];
-
 	int global_id = blockIdx.x * blockDim.x + threadIdx.x;
 
 	int filter = ((1 << NUM_BITS_PASS) - 1) << bit_num;
@@ -112,6 +119,8 @@ __global__ void histogram_kernel(const unsigned int *d_in, unsigned int * const 
 
 #define NUM_BANKS 32
 #define LOG_NUM_BANKS 5
+#define ZERO_BANK_CONFLICTS
+
 #ifdef ZERO_BANK_CONFLICTS
 #define CONFLICT_FREE_OFFSET(n) \
 ((n) >> (LOG_NUM_BANKS) + (n) >> (2 * LOG_NUM_BANKS))
@@ -119,16 +128,19 @@ __global__ void histogram_kernel(const unsigned int *d_in, unsigned int * const 
 #define CONFLICT_FREE_OFFSET(_n) ((_n) >> LOG_NUM_BANKS)
 #endif
 
-__global__ void prescan(float *g_odata, float *g_idata, int n)
+__global__ void prescan(unsigned int *g_odata, unsigned int *g_idata, int n)
 {
-	extern __shared__ float temp[];// allocated on invocation
+	extern __shared__ unsigned int temp[];// must be twice size of the block size
+											// block size * sizeof(unsigned int) * 2 = 8KBytes
 	int thid = threadIdx.x;
+
 	int offset = 1;
 	//A
 	int ai = thid;
-	int bi = thid + (n/2);
+	int bi = thid + (n/2);//(BLOCK_SIZE/2);
 	int bankOffsetA = CONFLICT_FREE_OFFSET(ai);
 	int bankOffsetB = CONFLICT_FREE_OFFSET(bi);
+
 	temp[ai + bankOffsetA] = g_idata[ai];
 	temp[bi + bankOffsetB] = g_idata[bi];
 
@@ -147,12 +159,13 @@ __global__ void prescan(float *g_odata, float *g_idata, int n)
 		}
 		offset <<= 1;
 	}
+
 	//C
 	if (thid == 0)
 	{
 		temp[n - 1 + CONFLICT_FREE_OFFSET(n - 1)] = 0; // clear the last element
 	}
-	for (int d = 1; d < n; d *= 2) // traverse down tree & build scan
+	for (int d = 1; d < n; d <<= 1) // traverse down tree & build scan
 	{
 		offset >>= 1;
 		__syncthreads();
@@ -164,7 +177,7 @@ __global__ void prescan(float *g_odata, float *g_idata, int n)
 			ai += CONFLICT_FREE_OFFSET(ai);
 			bi += CONFLICT_FREE_OFFSET(bi);
 
-			float t = temp[ai];
+			unsigned int t = temp[ai];
 			temp[ai] = temp[bi];
 			temp[bi] += t;
 		}
@@ -227,19 +240,21 @@ void your_sort(unsigned int* const d_inputVals,
 	checkCudaErrors(cudaMalloc(&d_bins, num_splits * sizeof(unsigned int)));
 	checkCudaErrors(cudaMemset(d_bins, 0, num_splits * sizeof(unsigned int)));
 
+	prescan_UnitTest();
+
 	for(int cnt = 0; cnt < num_bits; cnt += NUM_BITS_PASS)
 	{
 		predicate_kernel<<<num_blocks, BLOCK_SIZE>>>(d_pred, d_inputVals, numElems, cnt);
 
 		cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
-		histogram_kernel<<<num_blocks, BLOCK_SIZE,num_splits * sizeof(unsigned int) * BLOCK_SIZE>>>(d_inputVals,
+		histogram_kernel<<<num_blocks, BLOCK_SIZE,num_splits * sizeof(unsigned int) >>>(d_inputVals,
 				d_bins, num_splits, numElems, HISTO_ELEMS_THREAD, cnt);
 
 		cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
 		// scan
-
+		//prescan_UnitTest();
 
 		// move
 
@@ -251,4 +266,41 @@ void your_sort(unsigned int* const d_inputVals,
 	checkCudaErrors(cudaFree(d_bins));
 
 #endif
+}
+
+
+#define PRESCAN_TEST_SIZE 2048
+void prescan_UnitTest(void)
+{
+	unsigned int h_i[PRESCAN_TEST_SIZE];
+	for(int cnt = 0; cnt < PRESCAN_TEST_SIZE; ++cnt)
+	{
+		h_i[cnt] = 1;//cnt + 1;
+	}
+	unsigned int *d_i;
+
+	checkCudaErrors(cudaMalloc(&d_i, PRESCAN_TEST_SIZE * sizeof(unsigned int)));
+	checkCudaErrors(cudaMemcpy(d_i, h_i, PRESCAN_TEST_SIZE * sizeof(unsigned int), cudaMemcpyHostToDevice));
+	unsigned int *d_o;
+	checkCudaErrors(cudaMalloc(&d_o, PRESCAN_TEST_SIZE * sizeof(unsigned int)));
+	checkCudaErrors(cudaMemset(d_o,0,PRESCAN_TEST_SIZE*sizeof(unsigned int)));
+
+	prescan<<<1,PRESCAN_TEST_SIZE >> 1, PRESCAN_TEST_SIZE * sizeof(unsigned int)>>>(d_o,d_i, PRESCAN_TEST_SIZE);
+
+	cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+	checkCudaErrors(cudaMemcpy(h_i, d_o, PRESCAN_TEST_SIZE * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+	for(int cnt = 0; cnt < PRESCAN_TEST_SIZE; ++cnt)
+	{
+		std::cout << h_i[cnt] << " ";
+		if ((cnt + 1) % 10 == 0)
+		{
+			std::cout << std::endl;
+		}
+	}
+	std::cout << std::endl;
+
+
+	checkCudaErrors(cudaFree(d_i));
+	checkCudaErrors(cudaFree(d_o));
 }
